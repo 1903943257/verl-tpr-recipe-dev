@@ -1,0 +1,5 @@
+# TPR Recipe version requirement — private draft, not yet validated.
+# Do not use this file to install VERL until the integration patch is tested.
+UPSTREAM=https://github.com/verl-project/verl.git
+MODE=pending_validation
+NOTES=Pin the exact VERL commit only after the TPR patch and PPO launcher pass acceptance.
