@@ -40,7 +40,7 @@ diff --git a/verl/workers/engine/megatron/transformer_impl.py b/verl/workers/eng
 +            install_tpr_full_recompute(unwrap_model(module[0]), updated_tf_config)
 +
          print(f"module: {len(module)}")
-@@ -821,3 +837,11 @@ class MegatronEngine:
+@@ -821,3 +837,9 @@ class MegatronEngine:
              tu.assign_non_tensor(data, routed_num_tokens=routed_num_tokens.item())
  
 +        # Keep all logical trajectories together before native micro-batch / DCP scheduling.
