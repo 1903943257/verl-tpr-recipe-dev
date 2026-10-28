@@ -20,6 +20,7 @@ tpr/
 │   ├── README.md                    # 安装与运行指引
 │   └── ARCHITECTURE.md              # 本文：框架改动与执行流程
 └── verl_tpr/
+    ├── __init__.py                   # 包导出
     ├── adapter.py                   # VERL Engine 与 TPR Runtime 的适配入口
     ├── tree.py                      # 轨迹分组、树/森林执行计划与目标引用
     ├── executor.py                  # Segment 的 Push / Leaf / Pop 执行与反向传播
