@@ -159,7 +159,6 @@ python -m verl.trainer.main_ppo \
   trainer.v1.trainer_mode=colocate_async \
   trainer.v1.colocate_async.num_warmup_batches=0 \
   transfer_queue.enable=True \
-  transfer_queue.metrics.enabled=True \
   trainer.device=npu \
   trainer.nnodes="${NNODES}" \
   trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \
