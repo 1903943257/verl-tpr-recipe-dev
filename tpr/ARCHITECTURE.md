@@ -6,7 +6,7 @@
 
 **VERL 继续负责 PPO 训练编排；TPR Recipe 提供独立的训练侧前缀复用 Runtime；一个小型、版本锁定的 Patch 将 Runtime 接入 Megatron Engine。**
 
-TPR 不替换 VERL 的 rollout、reward、PPO Trainer、优化器或学习率调度器。未启用 `tpr_enabled` 时，执行继续走 VERL 原有路径。
+TPR 不替换 VERL 的 rollout、reward、PPO Trainer、优化器或学习率调度器。未启用 `tpr_enable` 时，执行继续走 VERL 原有路径。
 
 ## 2. Recipe 代码组织
 
@@ -85,16 +85,16 @@ flowchart TD
     A["UniAgent rollout / VERL batch"] --> B["VERL Actor PPO mini-batch"]
     B --> C["MegatronEngine.forward_backward_batch"]
     C --> D["共同准备：模型并行检查、全局 batch_num_tokens、dp_size 等元信息"]
-    D --> E{"tpr_enable 且为 Actor forward/backward？"}
+    D --> E{"分叉点：tpr_enable 且为 Actor forward/backward？\n（在原生 micro-batch / DCP 调度之前）"}
 
     E -- "否" --> N1["Native：保留原始 VERL 调度"]
     N1 --> N2{"原生 CP 调度模式"}
     N2 -- "DCP" --> N3["DynamicCPScheduler 生成 micro-batches"]
     N2 -- "普通调度" --> N4["prepare_micro_batches"]
-    N3 --> N5["原生 Megatron forward/backward schedule"]
+    N3 --> N5["原生 Megatron forward/backward schedule\n（含原生梯度收尾）"]
     N4 --> N5
-    N5 --> N6["原生 loss 归约 / postprocess"]
-    N6 --> N7["原生梯度收尾与结果整理"]
+    N5 --> N6["原生 loss / metrics postprocess"]
+    N6 --> N7["整理原生 model_output / loss / metrics"]
 
     E -- "是" --> T1["TPR：保留完整逻辑 mini-batch"]
     T1 --> T2["读取 trajectory keys / token mask"]
@@ -113,7 +113,7 @@ flowchart TD
     T12 --> T13["Forest 完成后执行梯度 finalize"]
     T13 --> T14["TPR loss 归约 / metrics 整理"]
 
-    N7 --> J["统一 Engine 返回契约：model_output / loss / metrics"]
+    N7 --> J["汇合点：统一 Engine 返回契约\n（两条路线均已完成梯度收尾）\nmodel_output / loss / metrics"]
     T14 --> J
     J --> K["返回 VERL 上层，继续原生 PPO 更新流程"]
 
