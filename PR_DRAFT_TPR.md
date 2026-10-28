@@ -43,26 +43,42 @@ python -m pip install -e /path/to/verl-recipe/tpr
 
 ## 4. 实验结果
 
-以下只展示两个序列形状：**P17S17** 与 **P16S2**。除特别说明外，模型为 Qwen3-4B-128K，设备为 8 张 Ascend NPU。离线回放、在线 E2E 与不同并行拓扑的结果分别标注，不将它们视为同一测试路径。
+本节只保留两个场景：**P17S17 固定形状训练侧回放**和 **P16S2 SWE-ReBench 场景**。模型为 Qwen3-4B-128K，设备为 8 张 Ascend NPU。前缀复用率按下式计算：
+
+`prefix reuse rate = (logical tokens - unique tree tokens) / logical tokens`
+
+其中，`logical tokens / unique tree tokens` 另列为计算量压缩比。在线 E2E、固定形状回放与训练侧 2×2 消融的测量范围和并行配置不同，不能混为同一条性能数字。
 
 ### 4.1 P17S17：固定形状训练侧回放
 
-配置：N=8，TP2 × CP4 × DP1，Prefix=17,440 tokens，Suffix=17,440 tokens，关闭重计算。该实验是固定形状的训练侧 F/B 回放，不是在线 PPO E2E。
+配置：N=8，TP2 × CP4 × DP1，Prefix=17,440 tokens，Suffix=17,440 tokens，关闭重计算。该实验是由真实 PPO 轨迹派生的固定形状训练侧回放，不是在线 Agent E2E。
 
 | 指标 | Full | TPR | 结果 |
 |---|---:|---:|---:|
+| 逻辑 token 数 | 279,040 | 279,040 | 8 条轨迹 |
+| 树中唯一 token 数 | — | 156,956 | 重复计算 token 减少 122,084 |
+| 前缀复用率（按唯一 token 减少量计算） | — | — | **43.7%** |
+| 逻辑 token / 唯一 token | — | — | **1.78×** |
 | Forward + Backward 时间 | 21.0903 s | 16.5531 s | **1.274×** |
 | 峰值显存（allocated） | 38.14 GiB | 24.27 GiB | **降低 36.4%** |
-| 逻辑输入 token 数 | 279,040 | — | N=8 条轨迹 |
-| 树中唯一 token 数 | — | 156,956 | 相比逻辑 token 数减少约 **43.7%** |
 
-该结果展示长前缀、长后缀场景下训练侧计算与显存的观测收益；不能将其解释为完整 PPO 端到端加速比。
+**数据来源说明：** 此历史回放的 source capture 为 `cp4_n8_p17440_s17440.pt`，来源记录说明它由真实 PPO 数据派生为固定形状负载；当前捕获元数据没有明确记录它来自哪个 SWE-ReBench task。因此这里将它准确标注为真实 PPO 轨迹派生回放，不将其冒称为未经修改的 SWE-ReBench 在线任务结果。该结果支持固定形状训练侧 F/B 和显存收益，不代表完整 PPO E2E 加速。
 
-### 4.2 P16S2：在线 E2E 与训练侧回放
+### 4.2 P16S2：UniAgent + SWE-ReBench
 
-#### 在线 PPO E2E
+任务场景为 SWE-ReBench 的 `ASPP__pelita-875`。Prefix=16,384 tokens，Suffix 上限=2,048 tokens，N=8。在线 E2E 使用 TP2 × CP4 × DP1，未开启重计算。
 
-配置：N=8，TP2 × CP4 × DP1，Prefix=16,384 tokens，Suffix 上限=2,048 tokens，开启重计算；Full 和 TPR 各完成 5 步，进程均正常退出。
+#### 轨迹复用统计
+
+| 指标 | 结果 |
+|---|---:|
+| 逻辑 token 数 | 147,456 |
+| 树中唯一 token 数 | 34,210 |
+| 被复用的 token 数 | 113,246 |
+| **前缀复用率** | **76.8%** |
+| 逻辑 token / 唯一 token | **4.31×** |
+
+#### 在线 PPO E2E（Full / TPR 各运行 5 步）
 
 | 指标 | Full | TPR | 观测结果 |
 |---|---:|---:|---:|
@@ -72,22 +88,30 @@ python -m pip install -e /path/to/verl-recipe/tpr
 | 峰值显存（allocated） | 11.24 GiB | 11.64 GiB | TPR 高 0.40 GiB |
 | 峰值显存（reserved） | 12.31 GiB | 12.31 GiB | 相同 |
 
-本次 TPR 轨迹的逻辑输入 token 数为 147,456，树中唯一 token 数为 34,210，逻辑 token / 唯一 token 比为 4.31×。
+**E2E 结果限制：** 本次 TPR 的 5 步 reward、loss 和 grad norm 均为 0；Full 仅第 2 步出现非零 reward mean（0.125），且两组轨迹并非严格配对。因此 1.118× 仅是本次运行的墙钟时间观察，**不能作为有效训练 E2E 加速已得到验证的结论**。此外，E2E 的峰值 allocated 显存没有降低。
 
-**重要限制：** 该 E2E 运行中，TPR 的 5 步 reward、loss 和 grad norm 均为 0；Full 仅第 2 步出现非零 reward mean（0.125），且两组轨迹并非严格配对。因此这里仅报告实际观察到的流程计时，**不将 1.118× 宣称为已验证的有效训练 E2E 加速**。该结果还需要先解决训练信号问题，再进行公平的配对对比。
+#### 离线训练侧回放：Full / TPR × Recompute OFF / ON
 
-#### 同一 P16S2 形状的训练侧回放（补充测量）
+该实验使用同一 P16S2 场景捕获的 5 个 Actor mini-batch，TP8 × CP1 × DP1，不包含 rollout。下面报告纯前反向时间与完整训练侧时间。完整训练侧时间包含 F/B、gradient finalization、global gradient norm，以及 optimizer update / copy-back。
 
-该回放使用 TP8 × CP1 × DP1、5 个已捕获 Actor mini-batch、开启重计算；不包含 rollout。此配置与上面的在线 E2E 拓扑不同，两个结果不能直接横向比较。
+| 模式 | Recompute | 状态 | 完成步数 | 纯 F/B 累计时间 | 完整训练侧累计时间 | 峰值显存（allocated） |
+|---|---|---|---:|---:|---:|---:|
+| Full | OFF | OOM | 0/5 | — | — | — |
+| TPR | OFF | PASS | 5/5 | 29.453 s | 110.572 s | 23.794 GiB |
+| Full | ON | PASS | 5/5 | 76.742 s | 148.637 s | 8.801 GiB |
+| TPR | ON | PASS | 5/5 | 36.751 s | 110.162 s | 7.448 GiB |
 
-| 指标 | Full + Recompute | TPR + Recompute | 结果 |
+在 **Recompute=ON** 的公平配对中：
+
+| 指标 | Full + Recompute | TPR + Recompute | 加速 / 显存变化 |
 |---|---:|---:|---:|
-| 纯 Forward + Backward 累计时间 | 76.742 s | 36.751 s | **2.088×** |
-| 训练侧累计时间（F/B + gradient finalize + global grad norm + optimizer update / copy-back） | 148.637 s | 110.162 s | **1.349×** |
+| 纯 F/B 累计时间 | 76.742 s | 36.751 s | **2.088×** |
+| 完整训练侧累计时间 | 148.637 s | 110.162 s | **1.349×** |
 | 峰值显存（allocated） | 8.801 GiB | 7.448 GiB | **降低约 15.4%** |
-| 完成步数 | 5/5 | 5/5 | 均完成 |
 
-**优化器限制：** 这次离线回放使用持久化 CPU FP32-master AdamW 作为受控的 optimizer/update 回放路径，并非生产环境的原生 Megatron optimizer 路径；因此 1.349× 仅代表该训练侧回放设置的观测值，不代表生产优化器下的完整训练吞吐收益。
+2×2 消融还显示，TPR 关闭重计算时 F/B 为 29.453 s，开启重计算后为 36.751 s；但峰值显存从 23.794 GiB 降至 7.448 GiB，而完整训练侧时间分别为 110.572 s 和 110.162 s。Full 关闭重计算会 OOM，因此该单元格没有可比较的耗时数据。
+
+**优化器与复用率说明：** 这次离线回放使用持久化 CPU FP32-master AdamW（`β1=0.9, β2=0.95, eps=1e-8, weight_decay=0`）作为受控的 optimizer/update 回放路径，并非生产环境原生 Megatron optimizer 路径。因此 1.349× 是该训练侧回放设置的观测值，不应解释为生产优化器下的完整训练吞吐收益。76.8% 的复用率来自 P16S2 场景轨迹统计；回放摘要没有对 5 个捕获 mini-batch 另行汇总 unique-token 计数，所以这里不声称 2×2 回放对这 5 个 mini-batch 独立测得同一个复用率。
 
 ## 5. 验证状态与已知限制
 
