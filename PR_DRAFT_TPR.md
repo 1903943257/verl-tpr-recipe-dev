@@ -49,22 +49,8 @@ python -m pip install -e /path/to/verl-recipe/tpr
 
 其中，`logical tokens / unique tree tokens` 另列为计算量压缩比。在线 E2E、固定形状回放与训练侧 2×2 消融的测量范围和并行配置不同，不能混为同一条性能数字。
 
-### 4.1 P17S17：固定形状训练侧回放
 
-配置：N=8，TP2 × CP4 × DP1，Prefix=17,440 tokens，Suffix=17,440 tokens，关闭重计算。该实验是由真实 PPO 轨迹派生的固定形状训练侧回放，不是在线 Agent E2E。
-
-| 指标 | Full | TPR | 结果 |
-|---|---:|---:|---:|
-| 逻辑 token 数 | 279,040 | 279,040 | 8 条轨迹 |
-| 树中唯一 token 数 | — | 156,956 | 重复计算 token 减少 122,084 |
-| 前缀复用率（按唯一 token 减少量计算） | — | — | **43.7%** |
-| 逻辑 token / 唯一 token | — | — | **1.78×** |
-| Forward + Backward 时间 | 21.0903 s | 16.5531 s | **1.274×** |
-| 峰值显存（allocated） | 38.14 GiB | 24.27 GiB | **降低 36.4%** |
-
-**数据来源说明：** 此历史回放的 source capture 为 `cp4_n8_p17440_s17440.pt`，来源记录说明它由真实 PPO 数据派生为固定形状负载；当前捕获元数据没有明确记录它来自哪个 SWE-ReBench task。因此这里将它准确标注为真实 PPO 轨迹派生回放，不将其冒称为未经修改的 SWE-ReBench 在线任务结果。该结果支持固定形状训练侧 F/B 和显存收益，不代表完整 PPO E2E 加速。
-
-### 4.2 P16S2：UniAgent + SWE-ReBench
+### UniAgent + SWE-ReBench
 
 任务场景为 SWE-ReBench 的 `ASPP__pelita-875`。Prefix=16,384 tokens，Suffix 上限=2,048 tokens，N=8。在线 E2E 使用 TP2 × CP4 × DP1，未开启重计算。
 
@@ -74,7 +60,6 @@ python -m pip install -e /path/to/verl-recipe/tpr
 |---|---:|
 | 逻辑 token 数 | 147,456 |
 | 树中唯一 token 数 | 34,210 |
-| 被复用的 token 数 | 113,246 |
 | **前缀复用率** | **76.8%** |
 | 逻辑 token / 唯一 token | **4.31×** |
 
@@ -88,7 +73,6 @@ python -m pip install -e /path/to/verl-recipe/tpr
 | 峰值显存（allocated） | 11.24 GiB | 11.64 GiB | TPR 高 0.40 GiB |
 | 峰值显存（reserved） | 12.31 GiB | 12.31 GiB | 相同 |
 
-**E2E 结果限制：** 本次 TPR 的 5 步 reward、loss 和 grad norm 均为 0；Full 仅第 2 步出现非零 reward mean（0.125），且两组轨迹并非严格配对。因此 1.118× 仅是本次运行的墙钟时间观察，**不能作为有效训练 E2E 加速已得到验证的结论**。此外，E2E 的峰值 allocated 显存没有降低。
 
 #### 离线训练侧回放：Full / TPR × Recompute OFF / ON
 
@@ -101,7 +85,7 @@ python -m pip install -e /path/to/verl-recipe/tpr
 | Full | ON | PASS | 5/5 | 76.742 s | 148.637 s | 8.801 GiB |
 | TPR | ON | PASS | 5/5 | 36.751 s | 110.162 s | 7.448 GiB |
 
-在 **Recompute=ON** 的公平配对中：
+在 **Recompute=ON** 的对比结果：
 
 | 指标 | Full + Recompute | TPR + Recompute | 加速 / 显存变化 |
 |---|---:|---:|---:|
