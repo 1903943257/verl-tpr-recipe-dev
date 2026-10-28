@@ -6,7 +6,7 @@
 
 **VERL 继续负责 PPO 训练编排；TPR Recipe 提供独立的训练侧前缀复用 Runtime；一个小型、版本锁定的 Patch 将 Runtime 接入 Megatron Engine。**
 
-TPR 不替换 VERL 的 rollout、reward、PPO Trainer、优化器或学习率调度器。未启用 `tpr_enable` 时，执行继续走 VERL 原有路径。
+TPR 不替换 VERL 的 rollout、reward、PPO Trainer、优化器或学习率调度器。未启用 `tpr_enabled` 时，执行继续走 VERL 原有路径。
 
 ## 2. Recipe 代码组织
 
@@ -41,10 +41,10 @@ Recipe 中保留的是 TPR 专属实现和运行示例，不复制完整 VERL �
 
 固定上游版本：`2ab35292039a51175a4b3d3b3b2d76e951a0d3e4`。
 
-TPR 对使用者只暴露一个全局开关：**`tpr_enable`**。
+TPR 对使用者只暴露一个全局开关：**`tpr_enabled`**。
 
-- `tpr_enable = false`：走 VERL 原生 Actor 训练执行路径。
-- `tpr_enable = true`：在满足 TPR 支持条件时，走 TPR Runtime。
+- `tpr_enabled = false`：走 VERL 原生 Actor 训练执行路径。
+- `tpr_enabled = true`：在满足 TPR 支持条件时，走 TPR Runtime。
 - CP 沿用 VERL 已有的 `context_parallel_size` 配置，不再提供独立的 TPR CP backend 选择项。
 - `context_parallel_size = 1` 时使用本地 TPR Attention；`context_parallel_size > 1` 时自动使用当前支持的 Ring CP 路径。
 
@@ -52,7 +52,7 @@ TPR 对使用者只暴露一个全局开关：**`tpr_enable`**。
 
 | 官方 VERL 文件 | 修改职责 | 为什么需要 |
 |---|---|---|
-| `verl/workers/config/engine.py` | 增加唯一的 TPR 开关 `tpr_enable` | 让用户通过一个配置选择 Native 或 TPR，不增加单独的 CP backend 开关 |
+| `verl/workers/config/engine.py` | 增加唯一的 TPR 开关 `tpr_enabled` | 让用户通过一个配置选择 Native 或 TPR，不增加单独的 CP backend 开关 |
 | `verl/workers/engine/megatron/transformer_impl.py` | 模型构建前安装 TPR Attention ModuleSpec | 将模型的 Attention 调用接入 TPR Runtime |
 | 同上 | 按现有重计算配置安装 TPR-aware recompute | 使重计算路径正确处理 TPR 的共享 KV 和梯度关系 |
 | 同上 | 在原生 micro-batch 切分 / DCP 调度之前分叉 | TPR 必须先看到完整逻辑 mini-batch，才能在多条轨迹之间构造共享前缀树 |
@@ -76,83 +76,53 @@ VERL 进入 `MegatronEngine.forward_backward_batch()` 后，会先完成两条�
 - 未启用 TPR 时，训练继续走原生执行路径；forward-only 请求也不会进入 TPR PPO 专用路由。
 - 两条路线在各自完成梯度收尾并整理结果后，统一返回 VERL 预期的 loss / metrics 结构。
 
-## 4. 一次训练请求：Native 与 TPR 的分叉和汇合
+## 4. 一次训练请求如何经过 TPR？
 
-下面的图展示同一批 Actor PPO 数据从共同入口开始，如何在 **原生 micro-batch 切分之前**分叉，以及如何在 **统一的 Engine 返回契约**处汇合。Native 和 TPR 中间的执行过程是两条不同路线。
+同一个 PPO Actor mini-batch 在 Engine 完成公共准备后，根据 `tpr_enabled` 分成 Native 和 TPR 两条执行路线；两条路线完成各自的前反向与梯度收尾后，统一返回 VERL 需要的 loss / metrics。
 
 ```mermaid
 flowchart TD
-    A["UniAgent rollout / VERL batch"] --> B["VERL Actor PPO mini-batch"]
-    B --> C["MegatronEngine.forward_backward_batch"]
-    C --> D["共同准备：模型并行检查、全局 batch_num_tokens、dp_size 等元信息"]
-    D --> E{"分叉点：tpr_enable 且为 Actor forward/backward？\n（在原生 micro-batch / DCP 调度之前）"}
+    A["PPO Actor mini-batch"] --> B["MegatronEngine train_batch / forward_backward_batch"]
+    B --> C["共同准备：batch_num_tokens、dp_size、loss_fn、model"]
+    C --> D{"tpr_enabled？"}
 
-    E -- "否" --> N1["Native：保留原始 VERL 调度"]
-    N1 --> N2{"原生 CP 调度模式"}
-    N2 -- "DCP" --> N3["DynamicCPScheduler 生成 micro-batches"]
-    N2 -- "普通调度" --> N4["prepare_micro_batches"]
-    N3 --> N5["原生 Megatron forward/backward schedule\n（含原生梯度收尾）"]
-    N4 --> N5
-    N5 --> N6["原生 loss / metrics postprocess"]
-    N6 --> N7["整理原生 model_output / loss / metrics"]
+    D -- "No" --> N1["prepare_micro_batches"]
+    N1 --> N2["Native micro-batch schedule"]
+    N2 --> N3["每个 micro-batch 执行原生 forward / backward"]
+    N3 --> N4["Native loss reduction"]
+    N4 --> N5["finalize_model_grads"]
+    N5 --> N6["整理 VERL 风格的 loss / metrics"]
 
-    E -- "是" --> T1["TPR：保留完整逻辑 mini-batch"]
-    T1 --> T2["读取 trajectory keys / token mask"]
-    T2 --> T3["构造 Forest、Tree 与 Segment plans"]
-    T3 --> T4["校验拓扑与 Segment 可执行性"]
-    T4 --> T5{"读取现有 context_parallel_size"}
-    T5 -- "CP = 1" --> T6["本地 TPR Attention"]
-    T5 -- "CP > 1" --> T7["自动选择 Ring CP"]
-    T6 --> T8["绑定 VERL 原生 PPO loss callback"]
-    T7 --> T8
-    T8 --> T9["SegmentExecutor：Push / Leaf / Pop"]
-    T9 <--> T10["TPR Attention + 共享 Prefix KV state"]
-    T9 --> T11["各分支计算独立 PPO 目标"]
-    T10 --> T12["分支反向与共享前缀梯度累加"]
-    T11 --> T12
-    T12 --> T13["Forest 完成后执行梯度 finalize"]
-    T13 --> T14["TPR loss 归约 / metrics 整理"]
+    D -- "Yes" --> T1["保留完整逻辑 mini-batch"]
+    T1 --> T2["构建 forest / tree / segment plans"]
+    T2 --> T3["绑定 VERL PPO objective"]
+    T3 --> T4["SegmentExecutor：push / leaf / pop"]
+    T4 --> T5["累加共享前缀梯度"]
+    T5 --> T6["finalize_model_grads"]
+    T6 --> T7["整理 VERL 风格的 loss / metrics"]
 
-    N7 --> J["汇合点：统一 Engine 返回契约\n（两条路线均已完成梯度收尾）\nmodel_output / loss / metrics"]
-    T14 --> J
-    J --> K["返回 VERL 上层，继续原生 PPO 更新流程"]
+    N6 --> J["统一返回 loss / metrics"]
+    T7 --> J
+    J --> K["继续 VERL PPO update flow"]
 
     classDef fork fill:#fff4d6,stroke:#b7791f,color:#222;
     classDef native fill:#e8f1ff,stroke:#4676b9,color:#222;
     classDef tpr fill:#e6f6ec,stroke:#2d8a57,color:#222;
     classDef join fill:#f1e9ff,stroke:#7955a6,color:#222;
-    class E fork;
-    class N1,N2,N3,N4,N5,N6,N7 native;
-    class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14 tpr;
+    class D fork;
+    class N1,N2,N3,N4,N5,N6 native;
+    class T1,T2,T3,T4,T5,T6,T7 tpr;
     class J,K join;
 ```
 
-### Native 路线：中间执行过程
+**图中需要记住的两个位置：**
 
-1. 根据原生 CP 调度模式，使用 `DynamicCPScheduler` 或 `prepare_micro_batches()` 生成 micro-batches。
-2. 进入原生 Megatron forward/backward schedule，由现有调度逻辑处理 micro-batch 执行、loss callback 和梯度同步 / 收尾。
-3. 原生路径完成 loss postprocess、metrics 整理，并返回 Engine 的标准结果结构。
-
-### TPR 路线：中间执行过程
-
-1. **保留逻辑批次。** 在原生 micro-batch / DCP 调度之前接收完整 Actor mini-batch。
-2. **构造树。** 读取轨迹标识、token 和监督 mask，生成 Forest / Segment plans。当前树策略为 `qwen_turn`，只在 token 精确匹配的共享边界上复用前缀。
-3. **自动选择 CP 执行路径。** 沿用 VERL 已有的 `context_parallel_size`；CP=1 使用本地 Attention，CP>1 自动使用 Ring CP，不要求用户配置额外 backend。
-4. **绑定原生目标。** `SegmentPPOObjectiveAdapter` 将各 Segment 的 logits 映射到 VERL 原来的 PPO loss callback，并保留逻辑 mini-batch 的目标归一化语义。
-5. **执行共享树。** `SegmentExecutor` 按 Push / Leaf / Pop 执行共享前缀与分支；每条轨迹的 PPO 监督目标保持独立。
-6. **累加共享状态梯度。** 各分支的反向结果通过共享 Prefix KV 状态累加，并传回对应的祖先 Segment。
-7. **统一收尾。** Forest 执行完成后调用 Engine 提供的梯度 finalize，归约 loss 并整理 metrics。
-
-### 分叉点与汇合点
-
-- **分叉点：** `MegatronEngine.forward_backward_batch()` 完成公共 token / DP 元信息准备之后、原生 `prepare_micro_batches()` 或 DCP 调度之前。
-- **Native 路线：** 继续执行原生 micro-batch 调度、Megatron forward/backward schedule 和原生结果整理。
-- **TPR 路线：** 绕过原生 micro-batch 切分，直接在完整逻辑 mini-batch 上执行 Forest。
-- **汇合点：** 两条路线各自完成梯度收尾后，都以 VERL 预期的 `model_output / loss / metrics` 结构返回 Engine 调用方；上层 PPO 更新流程不需要区分中间采用哪条路线。
+- **分叉点：** Engine 完成公共准备后、原生 `prepare_micro_batches` 之前。Native 路线照常切分 micro-batch；TPR 路线保留完整逻辑 mini-batch，以便构建共享前缀树。
+- **汇合点：** 两条路线各自完成 `finalize_model_grads` 和 loss / metrics 整理后，统一返回 VERL。上层 PPO update flow 不需要改变。
 
 ## 5. CP / Ring 与重计算的边界
 
-- **唯一的用户开关：** `tpr_enable`。TPR 不额外暴露 CP backend 选择项。
+- **唯一的用户开关：** `tpr_enabled`。TPR 不额外暴露 CP backend 选择项。
 - **CP=1：** 使用本地 TPR Attention 执行路径。
 - **CP>1：** 复用 VERL 已有的 `context_parallel_size` 配置，自动选择当前支持的 Ring CP 路径；用户不需要再设置第二个 TPR 开关或选择其他 CP backend。
 - **DP：** 每个 DP replica 独立构造自己的 TPR forest；不跨 DP replica 共享 Prefix KV。DP 梯度同步仍由现有 Megatron / VERL 训练路径负责。
