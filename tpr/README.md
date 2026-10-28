@@ -14,6 +14,10 @@ The runtime was migrated to `verl_tpr/` and its package import was checked in th
 - `REQUIRED_VERL.txt`: pinned VERL revision for the patch.
 - `pyproject.toml`: standalone Python package metadata.
 
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the Recipe file layout, the exact VERL integration points, the training execution flow, and the current support boundaries.
+
 ## Required VERL revision
 
 Use the exact commit recorded in `REQUIRED_VERL.txt`. The patch is based on the upstream VERL source tree, not on the private `verl-tpr` development fork.
