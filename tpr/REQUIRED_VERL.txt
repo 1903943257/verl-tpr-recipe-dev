@@ -1,5 +1,10 @@
-# TPR Recipe version requirement — private draft, not yet validated.
-# Do not use this file to install VERL until the integration patch is tested.
+# TPR Recipe — pinned upstream VERL revision for verl-tpr.patch
 UPSTREAM=https://github.com/verl-project/verl.git
-MODE=pending_validation
-NOTES=Pin the exact VERL commit only after the TPR patch and PPO launcher pass acceptance.
+MODE=pinned
+BRANCH=main
+VERL_COMMIT=2ab35292039a51175a4b3d3b3b2d76e951a0d3e4
+GIT_SETUP=git clone https://github.com/verl-project/verl.git && cd verl && git checkout 2ab35292039a51175a4b3d3b3b2d76e951a0d3e4
+PATCH_CHECK=git apply --check /path/to/tpr/verl-tpr.patch
+PIP_INSTALL=pip install -e /path/to/tpr
+RECIPE_FOLDER=tpr
+NOTES=Patch and launcher are a private draft; verify patch application, config composition, and Ascend NPU PPO before public submission.
