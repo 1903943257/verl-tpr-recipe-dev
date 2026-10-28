@@ -57,6 +57,18 @@ TPR 对使用者只暴露一个全局开关：**`tpr_enabled`**。
 | 同上 | 按现有重计算配置安装 TPR-aware recompute | 使重计算路径正确处理 TPR 的共享 KV 和梯度关系 |
 | 同上 | 在原生 micro-batch 切分 / DCP 调度之前分叉 | TPR 必须先看到完整逻辑 mini-batch，才能在多条轨迹之间构造共享前缀树 |
 
+### 原生 SelfAttention 是在哪里替换的？
+
+这是**模型构建阶段的一次性适配**，不是每个 PPO mini-batch 运行到分叉点时才发生的操作。
+
+1. VERL 的 `verl/workers/engine/megatron/transformer_impl.py` 在构建 Megatron 模型前调用 `install_tpr_module_spec(self.provider, bridge=self.bridge)`。
+2. Recipe 的 `tpr/verl_tpr/adapter.py` 包装模型的 `ModuleSpec` provider，找到每个 Transformer layer 的 `submodules.self_attention`，把其中的原生 `SelfAttention` module 替换为 `TPRSelfAttention`。使用 vanilla MBridge 时，也会在模型创建前包装对应的 layer-spec 获取入口。
+3. `tpr/verl_tpr/attention.py` 中的 `TPRSelfAttention` 继承 Megatron 的 `SelfAttention`。没有 TPR Attention context 时，它回退到原生 `SelfAttention.forward()`；树形执行时，则读取共享 Prefix KV、计算当前 Segment 的 Attention，并把新 KV 写回 TPR context。
+
+因此，我们没有直接修改 Megatron-LM / MindSpeed 的核心源码，也没有替换整个 TransformerBlock。我们通过 VERL 的模型构建适配点替换 Attention 的 ModuleSpec，并复用现有训练栈提供的模型组件与运行能力。
+
+**它在流程中的位置：** 发生在训练开始前的模型构建阶段；每次 TPR 训练请求进入 `SegmentExecutor` 后，Segment 的模型前向才会调用已经构建好的 `TPRSelfAttention`。它属于 TPR 路线内部的 Attention 实现，不是 Native / TPR 的分叉点，也不需要在 SegmentExecutor 下另画并行分支。
+
 ### 为什么分叉点必须在 micro-batch 切分之前？
 
 VERL 进入 `MegatronEngine.forward_backward_batch()` 后，会先完成两条路径都需要的通用准备，包括全局监督 token 数、DP 元信息，以及相关的模型并行检查。
@@ -96,7 +108,7 @@ flowchart TD
     D -- "Yes" --> T1["保留完整逻辑 mini-batch"]
     T1 --> T2["构建 forest / tree / segment plans"]
     T2 --> T3["绑定 VERL PPO objective"]
-    T3 --> T4["SegmentExecutor：push / leaf / pop"]
+    T3 --> T4["SegmentExecutor：push / leaf / pop\n（Segment forward 调用已安装的 TPRSelfAttention）"]
     T4 --> T5["累加共享前缀梯度"]
     T5 --> T6["finalize_model_grads"]
     T6 --> T7["整理 VERL 风格的 loss / metrics"]
