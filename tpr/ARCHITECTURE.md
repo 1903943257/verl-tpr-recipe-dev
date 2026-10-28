@@ -120,26 +120,24 @@ flowchart TD
 - **分叉点：** Engine 完成公共准备后、原生 `prepare_micro_batches` 之前。Native 路线照常切分 micro-batch；TPR 路线保留完整逻辑 mini-batch，以便构建共享前缀树。
 - **汇合点：** 两条路线各自完成 `finalize_model_grads` 和 loss / metrics 整理后，统一返回 VERL。上层 PPO update flow 不需要改变。
 
-## 5. CP / Ring 与重计算的边界
+## 5. 执行边界与重计算
 
-- **唯一的用户开关：** `tpr_enabled`。TPR 不额外暴露 CP backend 选择项。
-- **CP=1：** 使用本地 TPR Attention 执行路径。
-- **CP>1：** 复用 VERL 已有的 `context_parallel_size` 配置，自动选择当前支持的 Ring CP 路径；用户不需要再设置第二个 TPR 开关或选择其他 CP backend。
-- **DP：** 每个 DP replica 独立构造自己的 TPR forest；不跨 DP replica 共享 Prefix KV。DP 梯度同步仍由现有 Megatron / VERL 训练路径负责。
-- **重计算：** 按现有 Engine 重计算配置安装 TPR-aware 适配；不把重计算策略扩展成 TPR 的第二个全局开关。当前仅支持已验证的配置组合。
-- **Leaf batching：** 同一父节点下满足条件的等长叶节点可以在 CP=1 下分组执行；当前这不改变 VERL 的 PPO 编排，且不应被描述为 CP Ring 路径的通用能力。
+- **唯一用户开关：** `tpr_enabled`。用户不需要额外选择 TPR 的 CP backend。
+- **并行配置：** 沿用 VERL 现有配置，CP 执行细节由 TPR Runtime 内部处理；当前实现使用 Ring 路径。
+- **DP：** 每个 DP replica 独立构造自己的 TPR forest，不跨 DP replica 共享 Prefix KV；梯度同步仍由现有 Megatron / VERL 训练路径负责。
+- **重计算：** 沿用 Engine 的重计算配置，并安装对应的 TPR-aware 适配；当前仅支持已验证的配置组合。
+- **Leaf batching：** 满足条件的叶节点可以在支持的执行路径中分组执行，不改变 VERL 的 PPO 编排。
 
 ## 6. 当前支持范围与限制
 
-本 Recipe 对应的是当前实现范围，不代表所有 Megatron 并行组合均已支持。
+本 Recipe 对应当前已经实现和验证的范围，不代表所有模型与并行组合均已支持。
 
 | 项目 | 当前代码中的限制 |
 |---|---|
 | 模型 | Dense Qwen / GPT 类路径；MoE、MTP 等不支持路径会显式拒绝 |
-| TP / CP | TP=1 支持 CP=1/2；TP=2 支持 CP=1/2/4，且 CP>1 需要 Ring |
-| DP | 常规支持 DP=1；生产 DP=2 组合目前限制为 TP=2、CP=2 |
+| 并行配置 | 沿用 VERL 现有配置；当前仅覆盖已验证的组合，超出支持范围会显式拒绝 |
 | PP / VPP / EP | 当前训练路径要求 PP=EP=1，且只有一个模型 chunk |
-| Sequence Parallel | TP>1 与 CP>1 同时启用 SP 的组合尚未验证；当前要求关闭 SP |
+| Sequence Parallel | 部分组合仍有限制；以启动前的能力校验为准 |
 | 训练模式 | TPR 专用路由是 Actor forward/backward 训练路径，不是通用 inference / forward-only 路径 |
 | PPO 目标 | 当前 Segment 目标适配限制为 vanilla policy loss 与 token-mean 聚合 |
 
