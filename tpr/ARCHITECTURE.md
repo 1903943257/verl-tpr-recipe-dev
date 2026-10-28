@@ -41,21 +41,22 @@ Recipe 中保留的是 TPR 专属实现和运行示例，不复制完整 VERL �
 
 固定上游版本：`2ab35292039a51175a4b3d3b3b2d76e951a0d3e4`。
 
-TPR 对使用者只暴露一个全局开关：**`tpr_enabled`**。
+TPR 通过一个全局开关 `tpr_enabled` 控制 Actor 训练执行路径：
 
 - `tpr_enabled = false`：走 VERL 原生 Actor 训练执行路径。
 - `tpr_enabled = true`：在满足 TPR 支持条件时，走 TPR Runtime。
-- CP 沿用 VERL 已有的 `context_parallel_size` 配置，不再提供独立的 TPR CP backend 选择项。
-- `context_parallel_size = 1` 时使用本地 TPR Attention；`context_parallel_size > 1` 时自动使用当前支持的 Ring CP 路径。
 
 ### Patch 接入点
 
-| 官方 VERL 文件 | 修改职责 | 为什么需要 |
+| 位置 | 修改或适配内容 | 作用 |
 |---|---|---|
-| `verl/workers/config/engine.py` | 增加唯一的 TPR 开关 `tpr_enabled` | 让用户通过一个配置选择 Native 或 TPR，不增加单独的 CP backend 开关 |
-| `verl/workers/engine/megatron/transformer_impl.py` | 模型构建前安装 TPR Attention ModuleSpec | 将模型的 Attention 调用接入 TPR Runtime |
-| 同上 | 按现有重计算配置安装 TPR-aware recompute | 使重计算路径正确处理 TPR 的共享 KV 和梯度关系 |
-| 同上 | 在原生 micro-batch 切分 / DCP 调度之前分叉 | TPR 必须先看到完整逻辑 mini-batch，才能在多条轨迹之间构造共享前缀树 |
+| VERL：`verl/workers/config/engine.py` | 增加 `tpr_enabled` 配置 | 显式选择 Native 或 TPR Actor 训练执行路径 |
+| VERL：`verl/workers/engine/megatron/transformer_impl.py`，模型构建前 | 调用 `install_tpr_module_spec()` | 将各 Transformer layer 的 Attention ModuleSpec 接入 TPR 实现 |
+| 同上，模型构建后 | 在启用重计算时调用 `install_tpr_full_recompute()` | 安装 TPR-aware 重计算适配，处理共享 KV 与对应的梯度关系 |
+| 同上，训练执行入口 | 在原生 `prepare_micro_batches()` 之前调用 `run_tpr_forward_backward_batch()` | 保留完整逻辑 Actor mini-batch，让 TPR 能在批次内构造共享前缀树 |
+| Recipe：`tpr/verl_tpr/adapter.py` | 连接 VERL Engine、模型构建和 TPR Runtime | 负责 Attention ModuleSpec 替换、轨迹标识解析、并行拓扑与能力校验、Forest 构建调用、PPO objective 绑定、SegmentExecutor 调度、梯度 finalize 和结果整理 |
+| Recipe：`tpr/verl_tpr/attention.py` | 实现 `TPRSelfAttention` | 在模型 Attention 层消费 TPR 上下文，读取共享 Prefix KV 并计算当前 Segment；不承担整个 mini-batch 的树调度 |
+| Recipe：`tpr/verl_tpr/ring.py` 等 | 封装 TPR 的 Ring CP 执行，并调用 MindSpeed 现有 Ring 能力 | 承担 TPR Attention 的分布式执行；当前 Patch 不直接修改 Megatron-LM 或 MindSpeed 的核心源码 |
 
 ### 原生 SelfAttention 是在哪里替换的？
 
@@ -75,10 +76,18 @@ VERL 进入 `MegatronEngine.forward_backward_batch()` 后，会先完成两条�
 
 随后才决定执行路径：
 
-- **Native 路线**：进入 VERL 原生的 DCP 调度或 `prepare_micro_batches()`，再按原生 Megatron forward/backward schedule 执行。
+- **Native 路线**：进入 VERL 原生的 `prepare_micro_batches()`，再按原生 Megatron forward/backward schedule 执行。
 - **TPR 路线**：保留完整逻辑 mini-batch，先构造 forest / segment plans，再由 TPR Executor 安排共享前缀与叶子分支的前反向执行。
 
 如果 TPR 在原生 micro-batch 切分之后才介入，共享前缀轨迹可能已经分散到不同 micro-batch，Runtime 就无法在原本的逻辑批次范围内发现并复用这些前缀。
+
+### 我们是在什么范围内组树？
+
+**当前是在单个逻辑 Actor mini-batch 内构建一棵或多棵树，组成一个 Forest；不会跨多个 mini-batch 保留轨迹并共同组树。**
+
+具体来说，`run_tpr_forward_backward_batch()` 每次接收当前的 `data`，调用 `build_tree_execution_plans(keys, data)` 构建本批次的 Forest。构树时会按轨迹 UID 分组，并根据 token 完全匹配的消息边界识别共享前缀。一个 mini-batch 可以包含多个 UID 组，因此最终是一个 Forest，而不一定只有一棵树。
+
+原生 micro-batch 切分会把一个逻辑 mini-batch 拆成更小的执行单元；TPR 必须在这一步之前组树，才能利用同一个逻辑 mini-batch 内不同轨迹的共享前缀。不同逻辑 mini-batch 之间不共享这棵树，也不复用彼此的 Prefix KV。
 
 ### 哪些框架能力保持不变？
 
