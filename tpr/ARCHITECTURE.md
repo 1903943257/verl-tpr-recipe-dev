@@ -19,20 +19,28 @@ tpr/
 │   ├── pyproject.toml               # 独立 Python 包元数据
 │   ├── README.md                    # 安装与运行指引
 │   └── ARCHITECTURE.md              # 本文：框架改动与执行流程
-└── verl_tpr/
-    ├── __init__.py                   # 包导出
-    ├── adapter.py                   # VERL Engine 与 TPR Runtime 的适配入口
-    ├── tree.py                      # 轨迹分组、树/森林执行计划与目标引用
-    ├── executor.py                  # Segment 的 Push / Leaf / Pop 执行与反向传播
-    ├── attention.py                 # 将共享前缀状态接入模型 Attention
-    ├── context.py                   # 单次 Segment forward 的 Attention 上下文
-    ├── state.py                     # Prefix KV、栈状态及延迟 dK/dV 累加
-    ├── objective.py                 # 将原生 VERL PPO loss 映射到各 Segment
-    ├── rectangular_attention.py      # CP=1 的矩形因果 Attention 路径
-    ├── ring.py                      # Context Parallel Runtime 与 Ring 后端
-    ├── ring_attention.py             # TPR 前缀块与 Ring Attention 的执行
-    ├── ring_layout.py                # 序列分片、全局位置与 Ring 布局
-    └── recompute.py                  # TPR 感知的重计算适配
+└── verl_tpr/  （以下按职责逻辑分组；实际文件均位于同一目录，并非物理子目录）
+    ├── __init__.py                  # 包导出
+    │
+    ├── [框架适配]
+    │   └── adapter.py               # VERL Engine 接入、ModuleSpec 替换、训练路由与结果整理
+    │
+    ├── [树形轨迹构建]
+    │   └── tree.py                  # 轨迹分组、树/森林执行计划与 PPO 目标引用
+    │
+    ├── [TPR 核心功能]
+    │   ├── executor.py              # Segment 的 Push / Leaf / Pop 调度与反向传播
+    │   ├── attention.py             # 将共享前缀状态接入模型 Attention
+    │   ├── context.py               # 单次 Segment forward 的 Attention 上下文
+    │   └── state.py                 # Prefix KV、栈状态及延迟 dK/dV 累加
+    │
+    └── [功能适配]
+        ├── objective.py             # 将原生 VERL PPO loss 映射到各 Segment
+        ├── rectangular_attention.py # CP=1 的矩形因果 Attention 路径
+        ├── ring.py                  # Context Parallel Runtime 与 Ring 后端
+        ├── ring_attention.py        # TPR 前缀块与 Ring Attention 的执行
+        ├── ring_layout.py           # 序列分片、全局位置与 Ring 布局
+        └── recompute.py             # TPR 感知的重计算适配
 ```
 
 Recipe 中保留的是 TPR 专属实现和运行示例，不复制完整 VERL 仓库。实验用例、轨迹准备、性能回放和调试脚本不属于最小 Runtime 包，应按各自用途留在测试或实验目录。
