@@ -95,7 +95,7 @@ python -m pip install -e /path/to/verl-recipe/tpr
 
 2×2 消融还显示，TPR 关闭重计算时 F/B 为 29.453 s，开启重计算后为 36.751 s；但峰值显存从 23.794 GiB 降至 7.448 GiB，而完整训练侧时间分别为 110.572 s 和 110.162 s。Full 关闭重计算会 OOM，因此该单元格没有可比较的耗时数据。
 
-**优化器与复用率说明：** 这次离线回放使用持久化 CPU FP32-master AdamW（`β1=0.9, β2=0.95, eps=1e-8, weight_decay=0`）作为受控的 optimizer/update 回放路径，并非生产环境原生 Megatron optimizer 路径。因此 1.349× 是该训练侧回放设置的观测值，不应解释为生产优化器下的完整训练吞吐收益。76.8% 的复用率来自 P16S2 场景轨迹统计；回放摘要没有对 5 个捕获 mini-batch 另行汇总 unique-token 计数，所以这里不声称 2×2 回放对这 5 个 mini-batch 独立测得同一个复用率。
+
 
 ## 5. 验证状态与已知限制
 
