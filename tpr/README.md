@@ -55,7 +55,7 @@ export TASK_CONFIG=/path/to/task_config_swe_rebench_docker.yaml
 bash /path/to/tpr/run_uniagent_rebench_ppo.sh
 ```
 
-Useful overrides include `TPR_ENABLED=False` for the Full baseline, `TOTAL_TRAINING_STEPS`, `MAX_PROMPT_LENGTH`, `MAX_RESPONSE_LENGTH`, `TRAIN_TP`, `TRAIN_CP`, and `TRAIN_SP`. The current packaged runtime requires `TRAIN_SP=False` when both TP and CP are greater than one; this will be revisited after the active SP+RingCP experiment is synchronized and revalidated. For the strict 16K+8K ReBench session-cap setup, set `SESSION_HARD_CAP=True` only when the selected UniAgent checkout implements that option.
+The only TPR enable/disable control exposed by the recipe launcher is `TPR_ENABLED` (set it to `False` for the Full baseline). CP is configured through the existing `TRAIN_CP` / VERL `context_parallel_size`: CP=1 uses local TPR Attention and CP>1 automatically selects Ring CP. Users do not need to choose a separate TPR CP backend. Other useful overrides include `TOTAL_TRAINING_STEPS`, `MAX_PROMPT_LENGTH`, `MAX_RESPONSE_LENGTH`, `TRAIN_TP`, `TRAIN_CP`, and `TRAIN_SP`. The current packaged runtime requires `TRAIN_SP=False` when both TP and CP are greater than one; this will be revisited after the active SP+RingCP experiment is synchronized and revalidated. For the strict 16K+8K ReBench session-cap setup, set `SESSION_HARD_CAP=True` only when the selected UniAgent checkout implements that option.
 
 The script does not stop Ray, modify the VERL checkout, install packages, or patch the UniAgent checkout. Run it in a dedicated container/resource allocation when another training job is active. `SESSION_HARD_CAP=True` requires a UniAgent build that implements the corresponding configuration option.
 
