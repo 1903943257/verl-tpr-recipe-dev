@@ -1,0 +1,92 @@
+name: Build PyOpenAPI3-83 AMD64 task image
+
+on:
+  push:
+    branches:
+      - build/pyopenapi3-83-amd64-image
+    paths:
+      - .github/workflows/build-pyopenapi3-83-amd64-image.yml
+      - e2e_test/images/pyopenapi3-83/Dockerfile
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-amd64-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout build definition
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build AMD64 task image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="uniagent-swe-pyopenapi3-83:amd64"
+          docker buildx build \
+            --platform linux/amd64 \
+            --file e2e_test/images/pyopenapi3-83/Dockerfile \
+            --tag "${IMAGE}" \
+            --load \
+            --progress=plain \
+            .
+
+          docker image inspect "${IMAGE}" \
+            --format '{{.Os}}/{{.Architecture}} {{.Id}}'
+
+      - name: Smoke-test task environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="uniagent-swe-pyopenapi3-83:amd64"
+          docker run --rm --platform linux/amd64 --entrypoint bash "${IMAGE}" -lc '
+            set -euo pipefail
+            test "$(git rev-parse HEAD)" = "2ef34c3213eb292703e0e5e6f2185b1e4725bbde"
+            python --version
+            python -m pip check
+            python -c "from pyopenapi3.schemas import ObjectsDTSchema; print(ObjectsDTSchema.__name__)"
+            pytest --version
+          '
+
+      - name: Export Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          docker save uniagent-swe-pyopenapi3-83:amd64 | gzip -1 > dist/uniagent-swe-pyopenapi3-83-amd64.tar.gz
+          (
+            cd dist
+            sha256sum uniagent-swe-pyopenapi3-83-amd64.tar.gz > SHA256SUMS
+          )
+          du -h dist/uniagent-swe-pyopenapi3-83-amd64.tar.gz
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyopenapi3-83-amd64-docker-image
+          path: |
+            dist/uniagent-swe-pyopenapi3-83-amd64.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Write build summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## PyOpenAPI3-83 AMD64 image"
+            echo "- Task repository: https://github.com/Algebra8/pyopenapi3"
+            echo "- Task commit: `2ef34c3213eb292703e0e5e6f2185b1e4725bbde`"
+            echo "- Image: `uniagent-swe-pyopenapi3-83:amd64`"
+            echo "- Platform: `linux/amd64`"
+            if [ -f dist/uniagent-swe-pyopenapi3-83-amd64.tar.gz ]; then
+              echo "- Archive size: $(du -h dist/uniagent-swe-pyopenapi3-83-amd64.tar.gz | cut -f1)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
